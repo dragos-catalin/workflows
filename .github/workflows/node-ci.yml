@@ -109,6 +109,7 @@ jobs:
         if: ${{ inputs.engines-check && !cancelled() }}
         shell: bash
         run: |
+          # shellcheck disable=SC2016 # JS template literals, not shell expansions
           node --input-type=module -e '
           import { readFileSync, existsSync } from "node:fs";
           const pkg = JSON.parse(readFileSync("package.json", "utf8"));
@@ -160,6 +161,7 @@ jobs:
           TURBO: ${{ inputs.turbo }}
           FILTER: ${{ steps.affected.outputs.filter }}
         run: |
+          # shellcheck disable=SC2086 # TASKS/FILTER are intentionally word-split
           fail=0
           if [ "$TURBO" = "true" ]; then
             # --continue: one red task does not hide the others.

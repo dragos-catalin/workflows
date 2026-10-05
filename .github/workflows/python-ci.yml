@@ -57,6 +57,7 @@ jobs:
         env:
           EXTRAS: ${{ inputs.extras }}
         run: |
+          # shellcheck disable=SC2086 # EXTRAS/args are intentionally word-split
           set -euo pipefail
           if [ -f uv.lock ]; then
             args=""; for e in $EXTRAS; do args="$args --extra $e"; done
@@ -77,4 +78,6 @@ jobs:
         shell: bash
         env:
           ARGS: ${{ inputs.pytest-args }}
-        run: uv run --no-sync python -m pytest $ARGS
+        run: |
+          # shellcheck disable=SC2086 # ARGS is intentionally word-split
+          uv run --no-sync python -m pytest $ARGS

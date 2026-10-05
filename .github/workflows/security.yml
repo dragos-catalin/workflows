@@ -85,7 +85,7 @@ jobs:
         run: |
           set -uo pipefail
           # osv-scanner.toml in the caller repo ([[IgnoredVulns]] with reason + ignoreUntil) is honoured.
-          osv-scanner scan source -r --format json . > osv.json; code=$?
+          code=0; osv-scanner scan source -r --format json . > osv.json || code=$?
           if [ "$code" = "128" ]; then echo "no lockfiles found - nothing to scan"; exit 0; fi
           if [ "$code" != "0" ] && [ "$code" != "1" ]; then echo "::error::osv-scanner failed ($code)"; exit "$code"; fi
           osv-scanner scan source -r --format table . || true
@@ -102,6 +102,6 @@ jobs:
         run: |
           set -uo pipefail
           if [ -z "$ALLOW" ]; then osv-scanner scan source -r --licenses . > lic.txt 2>&1 || true; sed -n '/License/,$p' lic.txt | head -60; exit 0; fi
-          osv-scanner scan source -r --licenses="$ALLOW" .; code=$?
+          code=0; osv-scanner scan source -r --licenses="$ALLOW" . || code=$?
           [ "$code" = "128" ] && exit 0
           exit $code
