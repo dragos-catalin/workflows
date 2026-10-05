@@ -161,13 +161,14 @@ jobs:
           TURBO: ${{ inputs.turbo }}
           FILTER: ${{ steps.affected.outputs.filter }}
         run: |
-          # shellcheck disable=SC2086 # TASKS/FILTER are intentionally word-split
           fail=0
+          read -ra tasks <<< "$TASKS"
+          read -ra filter <<< "$FILTER"
           if [ "$TURBO" = "true" ]; then
             # --continue: one red task does not hide the others.
-            pnpm exec turbo run $TASKS $FILTER --continue --output-logs=errors-only || fail=1
+            pnpm exec turbo run "${tasks[@]}" "${filter[@]}" --continue --output-logs=errors-only || fail=1
           else
-            for t in $TASKS; do
+            for t in "${tasks[@]}"; do
               if node -e "process.exit(require('./package.json').scripts?.['$t'] ? 0 : 1)"; then
                 echo "::group::pnpm run $t"
                 if pnpm run "$t"; then echo "::endgroup::"; else echo "::endgroup::"; echo "::error::pnpm run $t failed"; fail=1; fi

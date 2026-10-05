@@ -57,14 +57,15 @@ jobs:
         env:
           EXTRAS: ${{ inputs.extras }}
         run: |
-          # shellcheck disable=SC2086 # EXTRAS/args are intentionally word-split
           set -euo pipefail
+          read -ra extras <<< "$EXTRAS"
           if [ -f uv.lock ]; then
-            args=""; for e in $EXTRAS; do args="$args --extra $e"; done
-            uv sync --locked $args
+            args=(); for e in "${extras[@]}"; do args+=(--extra "$e"); done
+            uv sync --locked "${args[@]}"
           else
             uv venv
-            spec="."; [ -n "$EXTRAS" ] && spec=".[$(echo $EXTRAS | tr ' ' ',')]"
+            spec="."
+            if [ "${#extras[@]}" -gt 0 ]; then spec=".[$(IFS=,; echo "${extras[*]}")]"; fi
             uv pip install -e "$spec"
           fi
       - name: Ruff
@@ -79,5 +80,5 @@ jobs:
         env:
           ARGS: ${{ inputs.pytest-args }}
         run: |
-          # shellcheck disable=SC2086 # ARGS is intentionally word-split
-          uv run --no-sync python -m pytest $ARGS
+          read -ra args <<< "$ARGS"
+          uv run --no-sync python -m pytest "${args[@]}"
