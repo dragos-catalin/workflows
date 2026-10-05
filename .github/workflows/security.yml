@@ -89,7 +89,8 @@ jobs:
           if [ "$code" = "128" ]; then echo "no lockfiles found - nothing to scan"; exit 0; fi
           if [ "$code" != "0" ] && [ "$code" != "1" ]; then echo "::error::osv-scanner failed ($code)"; exit "$code"; fi
           osv-scanner scan source -r --format table . || true
-          bad=$(jq --argjson t "$FAIL_SEVERITY" '[.results[]?.packages[]? | .package as $p | .groups[]? | select(((.max_severity // "0") | tonumber) >= $t) | "\($p.name)@\($p.version) \(.ids | join(",")) sev=\(.max_severity // "?")"] | unique' osv.json)
+          # max_severity is "" for advisories without a CVSS score (e.g. RUSTSEC unmaintained notices): count those as 0.
+          bad=$(jq --argjson t "$FAIL_SEVERITY" '[.results[]?.packages[]? | .package as $p | .groups[]? | ((.max_severity // "") | if . == "" then 0 else (tonumber? // 0) end) as $s | select($s >= $t) | "\($p.name)@\($p.version) \(.ids | join(",")) sev=\($s)"] | unique' osv.json)
           n=$(echo "$bad" | jq length)
           echo "$bad" | jq -r '.[]' | while read -r line; do echo "::error::$line"; done
           echo "$n vulnerability group(s) at severity >= $FAIL_SEVERITY"
