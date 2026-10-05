@@ -1,0 +1,107 @@
+# Reusable security gate: secrets (gitleaks), vulnerable deps (osv-scanner,
+# every lockfile ecosystem: pnpm, npm, Cargo, pip/uv/poetry, Gradle, Go),
+# licence summary. Runs on `ubuntu-slim` (1 vCPU container, $0.002/min on
+# private repos, a third of ubuntu-latest) — none of this needs more.
+name: security
+
+on:
+  workflow_call:
+    inputs:
+      fail-severity:
+        description: Fail on vulnerabilities whose CVSS max severity is >= this (9 = critical only, 7 = high+, 0 = any)
+        type: number
+        default: 7
+      licenses-allow:
+        description: Comma-separated SPDX allowlist. Empty = print the licence summary only.
+        type: string
+        default: ""
+      full-history:
+        description: Scan the whole git history for secrets (default only on schedule/dispatch)
+        type: boolean
+        default: false
+      runs-on:
+        type: string
+        default: ubuntu-slim
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  OSV_VERSION: 2.6.0
+
+jobs:
+  secrets:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # The CLI, not gitleaks-action: the action needs a paid/registered licence
+      # key for organisation repos; the CLI is MIT and needs nothing.
+      - name: Install gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tgz="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLO "$base/$tgz"; curl -fsSLO "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " $tgz\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$tgz" gitleaks && sudo mv gitleaks /usr/local/bin/ && rm -f "$tgz" gitleaks_*_checksums.txt
+      - name: Scan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          FULL: ${{ inputs.full-history }}
+        run: |
+          set -uo pipefail
+          range=""
+          if [ "$FULL" != "true" ] && [ "$EVENT" = "pull_request" ]; then range="origin/$BASE_REF..HEAD";
+          elif [ "$FULL" != "true" ] && [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && ! echo "$BEFORE" | grep -qE '^0+$' && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then range="$BEFORE..HEAD"; fi
+          # .gitleaks.toml / .gitleaksignore in the caller repo are honoured automatically.
+          if [ -n "$range" ]; then echo "scanning $range"; gitleaks git . --redact --no-banner --log-opts="$range"; else echo "scanning full history"; gitleaks git . --redact --no-banner; fi
+
+  deps:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install osv-scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}"
+          curl -fsSL -o osv-scanner "$base/osv-scanner_linux_amd64"
+          curl -fsSL -o sums.txt "$base/osv-scanner_SHA256SUMS"
+          echo "$(grep ' osv-scanner_linux_amd64$' sums.txt | cut -d' ' -f1)  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner && sudo mv osv-scanner /usr/local/bin/ && rm -f sums.txt
+      - name: Vulnerabilities
+        shell: bash
+        env:
+          FAIL_SEVERITY: ${{ inputs.fail-severity }}
+        run: |
+          set -uo pipefail
+          # osv-scanner.toml in the caller repo ([[IgnoredVulns]] with reason + ignoreUntil) is honoured.
+          osv-scanner scan source -r --format json . > osv.json; code=$?
+          if [ "$code" = "128" ]; then echo "no lockfiles found - nothing to scan"; exit 0; fi
+          if [ "$code" != "0" ] && [ "$code" != "1" ]; then echo "::error::osv-scanner failed ($code)"; exit "$code"; fi
+          osv-scanner scan source -r --format table . || true
+          bad=$(jq --argjson t "$FAIL_SEVERITY" '[.results[]?.packages[]? | .package as $p | .groups[]? | select(((.max_severity // "0") | tonumber) >= $t) | "\($p.name)@\($p.version) \(.ids | join(",")) sev=\(.max_severity // "?")"] | unique' osv.json)
+          n=$(echo "$bad" | jq length)
+          echo "$bad" | jq -r '.[]' | while read -r line; do echo "::error::$line"; done
+          echo "$n vulnerability group(s) at severity >= $FAIL_SEVERITY"
+          [ "$n" = "0" ]
+      - name: Licences
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          ALLOW: ${{ inputs.licenses-allow }}
+        run: |
+          set -uo pipefail
+          if [ -z "$ALLOW" ]; then osv-scanner scan source -r --licenses . > lic.txt 2>&1 || true; sed -n '/License/,$p' lic.txt | head -60; exit 0; fi
+          osv-scanner scan source -r --licenses="$ALLOW" .; code=$?
+          [ "$code" = "128" ] && exit 0
+          exit $code

@@ -1,0 +1,189 @@
+# Reusable Node/pnpm CI: one job, one install, every check reported.
+#
+# Why one job and not lint/typecheck/test in parallel: private repos are billed
+# per job rounded UP to the minute, and each parallel job repeats checkout +
+# install. One job with `if: !cancelled()` per check still reports every
+# failure, at a third of the billed minutes. Turbo repos get parallelism inside
+# the job (turbo runs tasks concurrently) and only touch affected packages.
+name: node-ci
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      node-version:
+        description: Used when the repo has no .nvmrc / .node-version
+        type: string
+        default: "24"
+      turbo:
+        description: Run tasks through turbo, limited to packages affected by the change
+        type: boolean
+        default: false
+      tasks:
+        description: Space-separated package scripts (or turbo tasks) to run, each reported separately
+        type: string
+        default: "lint typecheck test"
+      extra:
+        description: Extra shell commands run after the tasks (e.g. "pnpm build && pnpm size")
+        type: string
+        default: ""
+      engines-check:
+        description: Fail when .nvmrc, engines.node and packageManager disagree
+        type: boolean
+        default: true
+      runs-on:
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        type: number
+        default: 20
+    secrets:
+      TURBO_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      CI: "1"
+      TURBO_TELEMETRY_DISABLED: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # turbo needs history to compute the affected set; plain repos need none.
+          fetch-depth: ${{ inputs.turbo && 0 || 1 }}
+
+      - name: Resolve Node version
+        id: node
+        shell: bash
+        run: |
+          f=""
+          for c in .nvmrc .node-version; do [ -f "$c" ] && f="$c" && break; done
+          if [ -n "$f" ]; then echo "file=$f" >> "$GITHUB_OUTPUT"; else echo "version=${{ inputs.node-version }}" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ${{ steps.node.outputs.file && format('{0}/{1}', inputs.working-directory, steps.node.outputs.file) || '' }}
+          node-version: ${{ steps.node.outputs.version }}
+
+      # Explicit restore/save instead of setup-node `cache: pnpm`: its save runs
+      # only on success, so a repo with a red build never gets a warm store.
+      - name: pnpm store path
+        id: store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm store
+        id: store-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles(format('{0}/pnpm-lock.yaml', inputs.working-directory)) }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Save pnpm store
+        if: ${{ !cancelled() && steps.store-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles(format('{0}/pnpm-lock.yaml', inputs.working-directory)) }}
+
+      - name: Engines consistency
+        if: ${{ inputs.engines-check && !cancelled() }}
+        shell: bash
+        run: |
+          node --input-type=module -e '
+          import { readFileSync, existsSync } from "node:fs";
+          const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+          const errs = [];
+          const rc = [".nvmrc", ".node-version"].find((f) => existsSync(f));
+          const pin = rc ? readFileSync(rc, "utf8").trim().replace(/^v/, "") : null;
+          const range = pkg.engines?.node;
+          if (!pkg.packageManager) errs.push("package.json has no packageManager (pnpm version is unpinned)");
+          if (!range) errs.push("package.json has no engines.node");
+          const floor = range?.match(/>=?\s*(\d+)/)?.[1];
+          const pinMajor = pin?.match(/^(\d+)/)?.[1];
+          if (pinMajor && floor && Number(pinMajor) < Number(floor)) errs.push(`${rc}=${pin} is below engines.node "${range}"`);
+          const running = process.versions.node.split(".")[0];
+          if (floor && Number(running) < Number(floor)) errs.push(`CI runs Node ${running}, below engines.node "${range}"`);
+          if (errs.length) { for (const e of errs) console.log(`::error::${e}`); process.exit(1); }
+          console.log(`ok: node ${process.versions.node}, engines ${range}, ${pkg.packageManager}`);
+          '
+
+      - name: Restore turbo cache
+        if: ${{ inputs.turbo }}
+        id: turbo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.working-directory }}/.turbo/cache
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - name: Affected filter
+        if: ${{ inputs.turbo }}
+        id: affected
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          if [ "$EVENT" = "pull_request" ]; then base="origin/$BASE_REF";
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && ! echo "$BEFORE" | grep -qE '^0+$' && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then base="$BEFORE"; fi
+          # Lockfile / root config change = everything is affected.
+          if [ -n "$base" ] && git diff --name-only "$base" HEAD | grep -qE '^(pnpm-lock\.yaml|pnpm-workspace\.yaml|package\.json|turbo\.json|tsconfig[^/]*\.json)$'; then base=""; fi
+          if [ -n "$base" ]; then echo "filter=--filter=...[$base]" >> "$GITHUB_OUTPUT"; echo "affected since $base"; else echo "filter=" >> "$GITHUB_OUTPUT"; echo "full run"; fi
+
+      - name: Run tasks
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          TASKS: ${{ inputs.tasks }}
+          TURBO: ${{ inputs.turbo }}
+          FILTER: ${{ steps.affected.outputs.filter }}
+        run: |
+          fail=0
+          if [ "$TURBO" = "true" ]; then
+            # --continue: one red task does not hide the others.
+            pnpm exec turbo run $TASKS $FILTER --continue --output-logs=errors-only || fail=1
+          else
+            for t in $TASKS; do
+              if node -e "process.exit(require('./package.json').scripts?.['$t'] ? 0 : 1)"; then
+                echo "::group::pnpm run $t"
+                if pnpm run "$t"; then echo "::endgroup::"; else echo "::endgroup::"; echo "::error::pnpm run $t failed"; fail=1; fi
+              else
+                echo "::notice::script '$t' not defined, skipped"
+              fi
+            done
+          fi
+          exit $fail
+
+      - name: Extra
+        if: ${{ !cancelled() && inputs.extra != '' }}
+        shell: bash
+        run: ${{ inputs.extra }}
+
+      - name: Save turbo cache
+        if: ${{ !cancelled() && inputs.turbo }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.working-directory }}/.turbo/cache
+          key: turbo-${{ runner.os }}-${{ github.sha }}

@@ -1,0 +1,80 @@
+# Reusable Python CI with uv: ruff (lint + format check) and pytest, one job.
+# uv's cache is restored/saved by setup-uv keyed on the lock/pyproject.
+name: python-ci
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      python-version:
+        type: string
+        default: "3.12"
+      extras:
+        description: Optional-dependency groups to install, space-separated (e.g. "dev")
+        type: string
+        default: "dev"
+      ruff:
+        type: boolean
+        default: true
+      ruff-format:
+        description: Also enforce `ruff format --check`
+        type: boolean
+        default: false
+      pytest-args:
+        type: string
+        default: ""
+      runs-on:
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          enable-cache: true
+          cache-dependency-glob: |
+            ${{ inputs.working-directory }}/uv.lock
+            ${{ inputs.working-directory }}/pyproject.toml
+            ${{ inputs.working-directory }}/requirements*.txt
+      - name: Install
+        shell: bash
+        env:
+          EXTRAS: ${{ inputs.extras }}
+        run: |
+          set -euo pipefail
+          if [ -f uv.lock ]; then
+            args=""; for e in $EXTRAS; do args="$args --extra $e"; done
+            uv sync --locked $args
+          else
+            uv venv
+            spec="."; [ -n "$EXTRAS" ] && spec=".[$(echo $EXTRAS | tr ' ' ',')]"
+            uv pip install -e "$spec"
+          fi
+      - name: Ruff
+        if: ${{ inputs.ruff && !cancelled() }}
+        run: uvx ruff check --output-format=github .
+      - name: Ruff format
+        if: ${{ inputs.ruff-format && !cancelled() }}
+        run: uvx ruff format --check .
+      - name: Pytest
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          ARGS: ${{ inputs.pytest-args }}
+        run: uv run --no-sync python -m pytest $ARGS
