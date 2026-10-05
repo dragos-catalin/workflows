@@ -18,6 +18,10 @@ on:
       ruff:
         type: boolean
         default: true
+      ruff-select:
+        description: Rule codes to gate on (comma list). Empty = the repo's own ruff config.
+        type: string
+        default: ""
       ruff-format:
         description: Also enforce `ruff format --check`
         type: boolean
@@ -70,7 +74,11 @@ jobs:
           fi
       - name: Ruff
         if: ${{ inputs.ruff && !cancelled() }}
-        run: uvx ruff check --output-format=github .
+        env:
+          SELECT: ${{ inputs.ruff-select }}
+        shell: bash
+        run: |
+          if [ -n "$SELECT" ]; then uvx ruff check --output-format=github --select "$SELECT" .; else uvx ruff check --output-format=github .; fi
       - name: Ruff format
         if: ${{ inputs.ruff-format && !cancelled() }}
         run: uvx ruff format --check .

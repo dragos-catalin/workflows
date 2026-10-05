@@ -2,11 +2,11 @@
 
 Reusable GitHub Actions workflows for every repo of **dragos-catalin** (and the personal `dragoscv` repos). Public on purpose: a public repo's reusable workflows can be called from any account or org, and contain no secrets.
 
-| Workflow | What it runs | Runner |
-| --- | --- | --- |
-| [`node-ci.yml`](.github/workflows/node-ci.yml) | pnpm install (store cached via restore/save, so red builds still warm it) → engines check (`.nvmrc` / `engines.node` / `packageManager` agree) → each task (`lint typecheck test` by default) reported separately → optional `extra` commands. `turbo: true` runs only packages affected since the PR base / previous push, with the turbo cache kept between runs. | `ubuntu-latest` |
-| [`python-ci.yml`](.github/workflows/python-ci.yml) | uv (cached) → ruff check (+ optional `ruff format --check`) → pytest. | `ubuntu-latest` |
-| [`security.yml`](.github/workflows/security.yml) | gitleaks CLI (only the new commits on push/PR, full history on schedule) + osv-scanner over every lockfile ecosystem (pnpm, npm, Cargo, pip/uv, Gradle, Go), failing at CVSS ≥ `fail-severity` (default 7) + licence summary or allowlist. Checksums verified for both binaries. | `ubuntu-slim` |
+| Workflow                                           | What it runs                                                                                                                                                                                                                                                                                                                                                        | Runner          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| [`node-ci.yml`](.github/workflows/node-ci.yml)     | pnpm install (store cached via restore/save, so red builds still warm it) → engines check (`.nvmrc` / `engines.node` / `packageManager` agree) → each task (`lint typecheck test` by default) reported separately → optional `extra` commands. `turbo: true` runs only packages affected since the PR base / previous push, with the turbo cache kept between runs. | `ubuntu-latest` |
+| [`python-ci.yml`](.github/workflows/python-ci.yml) | uv (cached) → ruff check (+ optional `ruff format --check`) → pytest.                                                                                                                                                                                                                                                                                               | `ubuntu-latest` |
+| [`security.yml`](.github/workflows/security.yml)   | gitleaks CLI (only the new commits on push/PR, full history on schedule) + osv-scanner over every lockfile ecosystem (pnpm, npm, Cargo, pip/uv, Gradle, Go), failing at CVSS ≥ `fail-severity` (default 7) + licence summary or allowlist. Checksums verified for both binaries.                                                                                    | `ubuntu-slim`   |
 
 ## Use
 
